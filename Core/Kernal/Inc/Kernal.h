@@ -41,3 +41,6 @@ typedef struct
     __asm__ __volatile__("mov %0, " #reg_name : "=r"(__val) : : "memory"); \
     __val;                 \
     })
+
+#define switch_contex() \
+    __asm__ volatile("ldr r0, =0xE000ED04\n\t" "mov r1, #0x10000000\n\t" "str r1, [r0]\n\t" "isb\n\t": : : "r0", "r1", "memory");

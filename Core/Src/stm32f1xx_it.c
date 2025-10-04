@@ -196,30 +196,15 @@ void DebugMon_Handler(void)
 /**
   * @brief This function handles Pendable request for system service.
   */
-void PendSV_Handler(void)
-{
-  /* USER CODE BEGIN PendSV_IRQn 0 */
-  __ASM volatile("bkpt #0");
-  __ASM volatile(
-    "mrs r0, PSP    \n"
-    "stmdb r0!, {r4-r11, lr} \n"
-    "ldr r1, =curr_task      \n"
-    "ldr r2, [r1]            \n"
-    "str r0, [r2]            \n"
+// void PendSV_Handler(void)
+// {
+//   /* USER CODE BEGIN PendSV_IRQn 0 */
 
-    "eor r2, #1             \n"
-    "str r2, [r1]            \n"
+//   /* USER CODE END PendSV_IRQn 0 */
+//   /* USER CODE BEGIN PendSV_IRQn 1 */
 
-    "ldr r0, [r2]            \n"
-    "ldmia r0!, {r4-r11, lr} \n"
-    "msr PSP, r0             \n"
-    "bx lr                   \n"
-  );
-  /* USER CODE END PendSV_IRQn 0 */
-  /* USER CODE BEGIN PendSV_IRQn 1 */
-
-  /* USER CODE END PendSV_IRQn 1 */
-}
+//   /* USER CODE END PendSV_IRQn 1 */
+// }
 
 /**
   * @brief This function handles System tick timer.
