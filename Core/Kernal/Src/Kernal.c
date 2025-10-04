@@ -2,7 +2,7 @@
  * @Author: qwqb233 qwqb.zhang@gmail.com
  * @Date: 2025-10-03 11:01:28
  * @LastEditors: qwqb233 qwqb.zhang@gmail.com
- * @LastEditTime: 2025-10-04 10:57:53
+ * @LastEditTime: 2025-10-04 11:41:01
  * @FilePath: \asm_test\Core\Kernal\Src\Kernal.c
  * @Description: 这是默认设置,请设置`customMade`, 打开koroFileHeader查看配置 进行设置: https://github.com/OBKoro1/koro1FileHeader/wiki/%E9%85%8D%E7%BD%AE
  */
@@ -29,9 +29,9 @@ void *my_memset(void *buf, char c, size_t n) {
         *p++ = c;
     return buf;
 }
-void trigger_usage_fault(void)
+
+void usage_fault_init(void)
 {
-    // 使用单个指令设置两个寄存器
     __asm__ __volatile__(
         // 设置SCB->SHCSR的USGFAULTENA位
         "ldr r0, =0xE000ED24   \n"
@@ -48,18 +48,25 @@ void trigger_usage_fault(void)
         :
         : "r0", "r1", "memory"
     );
-    
+}
+void trigger_usage_fault(void)
+{
+    // 确保已经初始化
     // 触发除零，进入UsageFault
-    int a = 10;
-    int b = 0;
-    int c = a / b;
+    int a = 1 / 0;
 }
 
 void kernel_main(void) {
     my_memset(_sbss, 0, (size_t) _ebss - (size_t) _sbss);
+    usage_fault_init();
     init_stack_top();
+    // 将sp指向用户栈顶
+    // __asm__ volatile("mov sp, %0":: "r" (user_stack_top));
+    // 将psp指向用户栈顶,并切换到用户栈模式
+    __asm__ volatile("msr psp, %0":: "r" (user_stack_top));
+    __asm__ volatile("msr control, %0":: "r" (0x00000002));
     // 触发用户中断
-    trigger_usage_fault();
+    int a = 1 / 0;
 
     for (;;);
 }
@@ -77,37 +84,6 @@ void boot(void) {
 
 void handler_panic(const char *msg) {
     PANIC("test");
-}
-
-// TODO: 试试中断保存到用户栈先
-paddr_t push_registers_custom_stack(paddr_t stack_ptr) {
-    // stack_ptr 要是栈顶地址
-    // 可能不合法，AI写的都是乐色，不如我灵机一动
-    // 会丢掉r0中的数据
-    paddr_t origin_ptr = 0;
-    paddr_t update_ptr = 0;
-    __asm__ volatile (
-        "mov %[ori_stack], sp\n"
-        "mov sp, %[stack_ptr]\n"
-        "push {r0-r12, lr}\n"
-        "mov %[update_stack], sp\n"
-        "mov sp, %[ori_stack]\n"
-        : [ori_stack] "=r" (origin_ptr),[update_stack] "=r" (update_ptr)
-        : [stack_ptr] "r" (stack_ptr)
-        : "r0", "r1", "memory"
-    );
-    return update_ptr;
-}
-
-paddr_t pop_registers_custom_stack(paddr_t stack_ptr) {
-    paddr_t update_ptr = 0;
-    __asm__ volatile(
-        "mov sp, %[stack_ptr]\n"
-        :
-        : [stack_ptr] "r" (stack_ptr)
-        : "r0", "r1", "r2",  "r3", "r4", "r5", "r6", "r7", "r8", "r9", "r10", "r11", "r12", "lr", "memory"
-    );
-    return update_ptr;
 }
 
 
@@ -146,10 +122,22 @@ void* alloc_page(uint32_t n)
 
 void UsageFault_Handler(void)
 {
-    // 推入用户栈并更新栈顶
-    user_stack_top = push_registers_custom_stack(user_stack_top);
-    // user_stack_top = pop_registers_custom_stack(user_stack_top);
-    __asm__ __volatile__(
+    // 进入函数后，硬件自动保存当前上下文，但单步执行时会向栈中写类似pc的值，可能是PSP和MSP的问题
+    // 在中断中会使用MSP，试一下在外部切换为PSP看看栈中会不会出现奇怪的值.
+    
+    // 问题解决，在进入中断前也就是执行任务函数时使用PSP，中断时使用MSP
+    
+    // 保存上下文流程
+    // 1.保存psp到r0
+    // 2.使用r0作为栈指针，保存寄存器，stmdb sp!, {r0-r12, lr}
+    // 3.FUP寄存器，这里是f103芯片，没有fpu
+    // 4.psp更新为r0
+    __asm__ volatile(
+        "mrs r0, psp\n"
+        "stmdb r0!,{r4-r11}\n"
+        "msr psp, r0\n"
+    );
+    __asm__ volatile(
         // 调用处理函数
         "bl handler_panic               \n"
         "1: b 1b                        \n"
