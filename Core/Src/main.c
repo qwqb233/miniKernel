@@ -26,8 +26,6 @@
 /* USER CODE BEGIN Includes */
 #include <stdio.h>
 #include <string.h>
-
-#include "asm_main.h"
 #include "Kernal.h"
 /* USER CODE END Includes */
 

@@ -2,7 +2,7 @@
  * @Author: qwqb233 qwqb.zhang@gmail.com
  * @Date: 2025-10-03 11:01:28
  * @LastEditors: qwqb233 qwqb.zhang@gmail.com
- * @LastEditTime: 2025-10-04 19:29:41
+ * @LastEditTime: 2025-10-05 13:11:42
  * @FilePath: \asm_test\Core\Kernal\Src\Kernal.c
  * @Description: 这是默认设置,请设置`customMade`, 打开koroFileHeader查看配置 进行设置: https://github.com/OBKoro1/koro1FileHeader/wiki/%E9%85%8D%E7%BD%AE
  */
@@ -11,18 +11,85 @@
 
 extern uint32_t _sbss[],_ebss[],_estack[];
 
-//创建用户栈
-#define USER_STACK_SIZE 64
-__attribute__((section(".bss"), aligned(8)))
-paddr_t user_stack[USER_STACK_SIZE];
-paddr_t user_stack_top;
+#define WRITE_REG(reg_name, val) \
+    __asm__ __volatile__("mov " #reg_name ", %0" :: "r"(val) : "memory");
+#define READ_REG(reg_name) \
+    ({                     \
+    uint32_t __val;       \
+    __asm__ __volatile__("mov %0, " #reg_name : "=r"(__val) : : "memory"); \
+    __val;                 \
+    })
 
-// 创建PCB(静态)
-#define PROCS_MAX 8       // 最大进程数量
+// TODO: 系统调用
+// 系统调用
 
-#define PROC_UNUSED   0   // 未使用的进程控制结构
-#define PROC_RUNNABLE 1   // 可运行的进程
-#define PROC_RUNNING 2   // 正在运行的进程
+__attribute__((naked))
+void svc_panic(void)
+{
+    __asm__ volatile(
+        "svc 2\n"
+        "bx lr \n"
+    );
+}
+
+void* svc_alloc_page(uint32_t size)
+{
+    __asm__ volatile(
+        "mov r2, %0\n"
+        "svc 1\n"
+        "bx lr \n"
+        :
+        : "r"(size)
+        : "r2"
+    );
+}
+
+typedef struct
+{
+    uint32_t r0;
+    uint32_t r1;
+    uint32_t r2;
+    uint32_t r3;
+}svc_args_t;
+
+void sys_call(uint32_t _psp, sysCall_t syscall_num, uint32_t arg1, uint32_t arg2)
+{ 
+    uint32_t result = 0;
+    svc_args_t *args = (svc_args_t*)_psp;
+    switch(syscall_num)
+    {
+        case SYSCALL_MALLOC:
+            result = (uint32_t)alloc_page(arg1);
+            break;
+        case SYSCALL_PANIC:
+            PANIC("System call panic");
+            break;
+        default:
+            PANIC("Unknown system call");
+            break;
+    }
+    args->r0 = result;
+}
+
+// 系统调用中断
+__attribute__((naked))
+void SVC_Handler(void)
+{
+    __asm__ volatile(
+        "tst lr, #4 \n"
+        "ite eq \n"
+        "mrseq r0, msp \n"
+        "mrsne r0, psp \n"
+        "ldr r1, [r0, #24]   \n"  // 获取PC
+        "ldrb r1, [r1, #-2]  \n"  // 获取SVC编号
+        "bl sys_call \n"
+        "mov lr, #0xFFFFFFFD \n"
+        "bx lr \n"
+    );
+}
+
+
+// TODO: 中断处理
 
 // 最大255个线程
 typedef struct process {
@@ -32,8 +99,11 @@ typedef struct process {
     vaddr_t sp;          // 栈指针，切换任务时记得将sp寄存器保存到这里
     uint32_t stack[64]; // 内核栈
 }process_t;
-
+// 线程池
 process_t procs[PROCS_MAX];
+
+process_t * current_process = NULL;
+process_t * next_process = NULL;
 
 process_t * create_process(uint32_t pc)
 {
@@ -69,18 +139,6 @@ process_t * create_process(uint32_t pc)
     return p;
 }
 
-void init_stack_top(void)
-{
-    user_stack_top = (paddr_t)(&(user_stack[64]));
-}
-
-void *my_memset(void *buf, char c, size_t n) {
-    uint8_t *p = (uint8_t *) buf;
-    while (n--)
-        *p++ = c;
-    return buf;
-}
-
 void usage_fault_init(void)
 {
     __asm__ __volatile__(
@@ -106,9 +164,6 @@ void trigger_usage_fault(void)
     // 触发除零，进入UsageFault
     int a = 1 / 0;
 }
-
-process_t * current_process = NULL;
-process_t * next_process = NULL;
 
 // 使用函数调度器会出现栈问题，可选解决方案为
 // 1、修改PendSV_Handler逻辑，将调度交由pendsv异常处理
@@ -141,6 +196,7 @@ void process_A(void)
     // 触发中断
     while(1) 
     {
+        volatile uint32_t test = (uint32_t)svc_alloc_page(1);
         switch_contex();
     }
        
@@ -154,20 +210,11 @@ void process_B(void)
     }
 }
 
-process_t *pA = NULL;
-process_t *pB = NULL;
-
 void kernel_main(void) {
-    my_memset(_sbss, 0, (size_t) _ebss - (size_t) _sbss);
+    ker_memset(_sbss, 0, (size_t) _ebss - (size_t) _sbss);
     usage_fault_init();
-    init_stack_top();
-    // 将sp指向用户栈顶
-    // __asm__ volatile("mov sp, %0":: "r" (user_stack_top));
-    // 将psp指向用户栈顶,并切换到用户栈模式
-    // __asm__ volatile("msr psp, %0":: "r" (user_stack_top));
-    // __asm__ volatile("msr control, %0":: "r" (0x00000002));
-    pA = create_process((uint32_t)process_A);
-    pB = create_process((uint32_t)process_B);
+    create_process((uint32_t)process_A);
+    create_process((uint32_t)process_B);
     // 先切换psp再启动任务
     __asm__ volatile("msr psp, %0":: "r" (procs[0].sp));
     __asm__ volatile("msr control, %0":: "r" (0x00000002));
@@ -191,6 +238,7 @@ void boot(void) {
 
 void handler_panic(const char *msg) {
     PANIC("test");
+    (void)msg;
 }
 
 
@@ -226,8 +274,6 @@ void* alloc_page(uint32_t n)
     ker_memset((void*)now_page_ptr, 0, PAGE_SIZE);   // 将分配的内存页清零
     return (void*)now_page_ptr;                      // 返回分配的内存页起始地址
 }
-
-/* 触发 PendSV 异常（立即挂起，等待当前异常返回后执行） */
 
 
 void UsageFault_Handler(void)
@@ -267,14 +313,14 @@ void UsageFault_Handler(void)
     // 1.保存当前上下文，将psp存到PCB的sp中
     // 测试，创建了两个线程
     
-    
-    
     __asm__ volatile(
         // 调用处理函数
         "bl handler_panic               \n"
         "1: b 1b                        \n"
     );
 }
+
+// TODO: systick触发PendSV异常
 
 void PendSV_Handler(void)
 {
