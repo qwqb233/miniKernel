@@ -45,12 +45,15 @@ target_link_directories(${CMAKE_PROJECT_NAME} PRIVATE
     # Add user defined library search paths
 )
 
+file(GLOB_RECURSE SOURCES
+    "./Core/Src/*.c"
+    "./Core/Kernal/Src/*.c"
+)
+
 # Add sources to executable
 target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     # Add user sources here
-    ./Core/Src/asm_main.c
-    ./Core/Kernal/Src/Kernal.c
-    ./Core/Kernal/Src/common.c
+    ${SOURCES}
 )
 
 # Add include paths
@@ -58,6 +61,7 @@ target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
     # Add user defined include paths
     ./Core/Inc/
     ./Core/Kernal/Inc
+    ./Core/Kernal/sys
 )
 
 # Add project symbols (macros)

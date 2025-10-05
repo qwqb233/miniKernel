@@ -2,17 +2,20 @@
  * @Author: qwqb233 qwqb.zhang@gmail.com
  * @Date: 2025-10-03 11:01:28
  * @LastEditors: qwqb233 qwqb.zhang@gmail.com
- * @LastEditTime: 2025-10-05 13:11:42
+ * @LastEditTime: 2025-10-05 14:12:07
  * @FilePath: \asm_test\Core\Kernal\Src\Kernal.c
  * @Description: 这是默认设置,请设置`customMade`, 打开koroFileHeader查看配置 进行设置: https://github.com/OBKoro1/koro1FileHeader/wiki/%E9%85%8D%E7%BD%AE
  */
-#include "common.h" 
+
 #include "Kernal.h"
+#include "sys/memory.h"
+#include "sys/process.h"
 
 extern uint32_t _sbss[],_ebss[],_estack[];
 
 #define WRITE_REG(reg_name, val) \
     __asm__ __volatile__("mov " #reg_name ", %0" :: "r"(val) : "memory");
+
 #define READ_REG(reg_name) \
     ({                     \
     uint32_t __val;       \
@@ -20,7 +23,6 @@ extern uint32_t _sbss[],_ebss[],_estack[];
     __val;                 \
     })
 
-// TODO: 系统调用
 // 系统调用
 
 __attribute__((naked))
@@ -91,53 +93,11 @@ void SVC_Handler(void)
 
 // TODO: 中断处理
 
-// 最大255个线程
-typedef struct process {
-    uint8_t pid;             // 进程 ID
-    uint8_t state;           // 进程状态: PROC_UNUSED 或 PROC_RUNNABLE
-    uint8_t first_in;
-    vaddr_t sp;          // 栈指针，切换任务时记得将sp寄存器保存到这里
-    uint32_t stack[64]; // 内核栈
-}process_t;
-// 线程池
-process_t procs[PROCS_MAX];
 
+// 线程池
+process_t procs[PROCS_MAX]; // 线程池
 process_t * current_process = NULL;
 process_t * next_process = NULL;
-
-process_t * create_process(uint32_t pc)
-{
-    process_t *p = NULL;
-    int i = 0;
-    for(;i < PROCS_MAX; i++)
-    {
-        if(procs[i].state == PROC_UNUSED)
-        {
-            p = &procs[i];
-            break;
-        }
-    }
-    if(!p)
-    {
-        PANIC("No free process");
-    }
-    p->pid = i;
-    p->state = PROC_RUNNABLE;
-    p->first_in = 0;
-    // 构建异常帧
-    p->sp = (vaddr_t)(&(p->stack[64-9]));
-    vaddr_t *stack_frame = (vaddr_t*)p->sp;
-    stack_frame[0] = 0; // r0
-    stack_frame[1] = 0; // r1
-    stack_frame[2] = 0; // r2
-    stack_frame[3] = 0; // r3
-    stack_frame[4] = 0; // r12
-    stack_frame[5] = 0; // lr (初始为0，异常返回时使用)
-    stack_frame[6] = pc; // pc (程序入口)
-    stack_frame[7] = 0x01000000; // xPSR, Thumb模式
-    
-    return p;
-}
 
 void usage_fault_init(void)
 {
@@ -165,46 +125,10 @@ void trigger_usage_fault(void)
     int a = 1 / 0;
 }
 
-// 使用函数调度器会出现栈问题，可选解决方案为
-// 1、修改PendSV_Handler逻辑，将调度交由pendsv异常处理
-// 2、将中断触发拿到任务体里面，在任务体中触发中断
-// 3、将调度器整体变成宏定义函数
-static inline uint8_t yield(void)
+// TODO: 完成时间片轮询后，删除这里的主动让出CPU
+void idle_task(void)
 {
-    process_t * next = next_process;
-    // 遍历线程池，寻找空闲线程
-    for (int i = 0; i < PROCS_MAX; i++) {
-        if(procs[i].state == PROC_RUNNABLE)
-        {
-            next = &procs[i];
-            break;
-        }
-    }
-
-    if(next == current_process)
-    {
-        return 0;
-    }
-
-    next_process = next;
-    // 触发PendSV异常，切换上下文
-    return 1;
-}
-
-void process_A(void)
-{
-    // 触发中断
-    while(1) 
-    {
-        volatile uint32_t test = (uint32_t)svc_alloc_page(1);
-        switch_contex();
-    }
-       
-}
-
-void process_B(void)
-{
-    while(1)
+    for(;;)
     {
         switch_contex();
     }
@@ -213,21 +137,19 @@ void process_B(void)
 void kernel_main(void) {
     ker_memset(_sbss, 0, (size_t) _ebss - (size_t) _sbss);
     usage_fault_init();
-    create_process((uint32_t)process_A);
-    create_process((uint32_t)process_B);
     // 先切换psp再启动任务
+    // 创建一个空闲任务，防止用户不创建任务时，调度器找不到任务
+    create_process((uint32_t)idle_task, procs);
     __asm__ volatile("msr psp, %0":: "r" (procs[0].sp));
     __asm__ volatile("msr control, %0":: "r" (0x00000002));
     switch_contex();  // 启动调度器
-    // 触发用户中断
-    // int a = 1 / 0;
 
     for (;;);
 }
 
 __attribute__((section(".text.boot")))
 __attribute__((naked))
-void boot(void) {
+void kernal_boot(void) {
     __asm__ __volatile__(
         "mov sp, %[stack_top]\n" // 设置栈指针
         "b kernel_main\n"       // 跳转到内核主函数
@@ -242,40 +164,7 @@ void handler_panic(const char *msg) {
 }
 
 
-uint32_t get_free_RAM(uint32_t page_ptr)
-{
-    // 获取RAM的终止地址
-    uint32_t ram_end = (uint32_t)_estack;
-    // 获取出去.bss段后的地址
-    uint32_t ram_start = (uint32_t)page_ptr;
-    // 计算剩余的RAM大小
-    uint32_t free_ram = ram_end - ram_start;
-
-    return free_ram;
-}
-
-/**
- * 分配指定数量的页内存
- * @param n 需要分配的页数
- * @return 分配的内存起始地址
- */
-void* alloc_page(uint32_t n)
-{
-    // 从栈顶开始分配一页内存
-    static uint32_t next_page_ptr = (uint32_t)_ebss;  // 静态变量，记录下一次分配的内存起始地址，初始化为_ebss地址
-    uint32_t now_page_ptr = next_page_ptr;            // 保存当前分配的内存起始地址
-    next_page_ptr += PAGE_SIZE * n;                   // 更新下一次分配的内存起始地址，增加n个页的大小
-
-    // 检查是否有足够的可用内存
-    uint32_t free_RAM = get_free_RAM(now_page_ptr);  // 获取当前地址的可用内存大小
-    if (free_RAM < PAGE_SIZE) {                      // 如果可用内存小于一页大小
-        PANIC("Out of memory");                      // 触发内存不足错误
-    }
-    ker_memset((void*)now_page_ptr, 0, PAGE_SIZE);   // 将分配的内存页清零
-    return (void*)now_page_ptr;                      // 返回分配的内存页起始地址
-}
-
-
+// 除零错误会进入这个中断
 void UsageFault_Handler(void)
 {
     // 进入函数后，硬件自动保存当前上下文，但单步执行时会向栈中写类似pc的值，可能是PSP和MSP的问题
@@ -326,7 +215,7 @@ void PendSV_Handler(void)
 {
     // 保存当前上下文，将psp存到PCB的sp中
     // 使用调度器切换任务，如果没有其他任务则直接返回
-    if(yield() == 0) goto return_U;
+    if(yield(procs, &current_process, &next_process) == 0) goto return_U;
     if(current_process != NULL)
     {
         __asm__ volatile(
@@ -361,7 +250,7 @@ void PendSV_Handler(void)
     next_process->first_in = 1;
     if(current_process != NULL)current_process->state = PROC_RUNNABLE;
     current_process = next_process;
-
+    
 return_U:
     __asm__ volatile(
         "mov lr, #0xFFFFFFFD \n"

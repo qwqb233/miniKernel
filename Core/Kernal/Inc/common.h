@@ -8,6 +8,8 @@
  */
 #pragma once
 
+#ifndef __STM32F1xx_HAL_H
+
 typedef int bool;
 typedef unsigned char uint8_t;
 typedef unsigned short uint16_t;
@@ -27,6 +29,16 @@ typedef uint32_t vaddr_t;
 #define va_start __builtin_va_start
 #define va_end   __builtin_va_end
 #define va_arg   __builtin_va_arg
+
+#endif
+
+// 内核恐慌处理
+// ##__VA_ARGS__ 宏，当不传入参数时，##__VA_ARGS__ 会被忽略，保证编译不出错
+#define PANIC(fmt, ...)                                                        \
+    do {                                                                       \
+        ker_printf("PANIC: %s:%d: " fmt "\n", __FILE__, __LINE__, ##__VA_ARGS__);  \
+        while (1) {}                                                           \
+    } while (0)
 
 #define PAGE_SIZE 4096
 
